@@ -11,8 +11,14 @@
   var LS = 'weblime.remote';
   var SS_TOKEN = 'weblime.remote.token';
   var DEFAULT_BASE = 'https://weblime-api.weblimer.workers.dev';
-  var PART = 20 * 1024 * 1024;   // 20 MB pro Teil
-  var MPU_THRESHOLD = 40 * 1024 * 1024;
+  // 64 MiB bleiben deutlich unter dem 100-MB-Request-Limit des Free-Plans.
+  // Drei gemeinsame Slots beschleunigen sowohl Multipart- als auch Ordner-Uploads,
+  // ohne pro Datei eine eigene, ungebremste Request-Gruppe zu starten.
+  var PART = 64 * 1024 * 1024;
+  var MPU_THRESHOLD = PART;
+  var UPLOAD_CONCURRENCY = 3;
+  var uploadActive = 0;
+  var uploadQueue = [];
 
   var cfg = load();
 
@@ -91,7 +97,31 @@
   }
 
   /* ---------------- Upload mit Fortschritt ---------------- */
-  function xhrPut(fullUrl, body, onProgress) {
+  function startUploadJob(job) {
+    uploadActive++;
+    Promise.resolve()
+      .then(job.run)
+      .then(job.resolve, job.reject)
+      .then(function () {
+        uploadActive--;
+        pumpUploads();
+      });
+  }
+
+  function pumpUploads() {
+    while (uploadActive < UPLOAD_CONCURRENCY && uploadQueue.length) {
+      startUploadJob(uploadQueue.shift());
+    }
+  }
+
+  function withUploadSlot(run) {
+    return new Promise(function (resolve, reject) {
+      uploadQueue.push({ run: run, resolve: resolve, reject: reject });
+      pumpUploads();
+    });
+  }
+
+  function xhrPutDirect(fullUrl, body, onProgress) {
     return new Promise(function (res, rej) {
       var x = new XMLHttpRequest();
       x.open('PUT', fullUrl, true);
@@ -108,6 +138,43 @@
       };
       x.onerror = function () { rej(new Error('Netzwerkfehler beim Upload')); };
       x.send(body);
+    });
+  }
+
+  function xhrPut(fullUrl, body, onProgress) {
+    return withUploadSlot(function () { return xhrPutDirect(fullUrl, body, onProgress); });
+  }
+
+  function uploadPartsInParallel(count, uploadPart) {
+    return new Promise(function (resolve, reject) {
+      var next = 0;
+      var active = 0;
+      var firstError = null;
+
+      function schedule() {
+        while (!firstError && active < UPLOAD_CONCURRENCY && next < count) {
+          var idx = next++;
+          active++;
+          Promise.resolve()
+            .then((function (partIndex) {
+              return function () { return uploadPart(partIndex); };
+            })(idx))
+            .catch(function (err) { if (!firstError) firstError = err; })
+            .then(function () {
+              active--;
+              schedule();
+            });
+        }
+
+        // Bei einem Fehler erst bereits laufende Teile abwarten. Danach kann der
+        // aufrufende Code den Multipart-Upload ohne Rennen sauber abbrechen.
+        if (active === 0 && (firstError || next >= count)) {
+          if (firstError) reject(firstError);
+          else resolve();
+        }
+      }
+
+      schedule();
     });
   }
 
@@ -155,31 +222,35 @@
 
     uploadMultipart: function (path, blob, onProgress) {
       var total = blob.size;
-      var uploadId, parts = [], done = 0;
+      var uploadId, parts = [];
 
       return json('POST', '/api/mpu/create', { path: path, mtime: blob.lastModified || Date.now() })
         .then(function (d) {
           uploadId = d.uploadId;
           var n = Math.ceil(total / PART);
-          var chain = Promise.resolve();
-          for (var i = 0; i < n; i++) {
-            (function (idx) {
-              chain = chain.then(function () {
-                var start = idx * PART;
-                var chunk = blob.slice(start, Math.min(start + PART, total));
-                return xhrPut(
-                  url('/api/mpu/part', { path: path, uploadId: uploadId, part: idx + 1 }),
-                  chunk,
-                  function (loaded) { if (onProgress) onProgress(done + loaded, total); }
-                ).then(function (r) {
-                  done += chunk.size;
-                  if (onProgress) onProgress(done, total);
-                  parts.push({ partNumber: idx + 1, etag: r.etag });
-                });
-              });
-            })(i);
+          var loadedByPart = [];
+          var loadedTotal = 0;
+          for (var i = 0; i < n; i++) loadedByPart.push(0);
+
+          function reportPart(idx, loaded, size) {
+            var value = Math.max(0, Math.min(loaded, size));
+            loadedTotal += value - loadedByPart[idx];
+            loadedByPart[idx] = value;
+            if (onProgress) onProgress(loadedTotal, total);
           }
-          return chain;
+
+          return uploadPartsInParallel(n, function (idx) {
+            var start = idx * PART;
+            var chunk = blob.slice(start, Math.min(start + PART, total));
+            return xhrPut(
+              url('/api/mpu/part', { path: path, uploadId: uploadId, part: idx + 1 }),
+              chunk,
+              function (loaded) { reportPart(idx, loaded, chunk.size); }
+            ).then(function (r) {
+              reportPart(idx, chunk.size, chunk.size);
+              parts.push({ partNumber: idx + 1, etag: r.etag });
+            });
+          });
         })
         .then(function () {
           parts.sort(function (a, b) { return a.partNumber - b.partNumber; });

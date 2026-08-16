@@ -10,6 +10,7 @@
   var GUTTER_MIN = 52;
   var MAX_TEXT = 20 * 1024 * 1024;   // größer wird nicht als Text indexiert
   var OVERSCAN = 12;
+  var IMPORT_CONCURRENCY = 3;
 
   var $ = function (id) { return document.getElementById(id); };
   var el = {};
@@ -48,6 +49,15 @@
     if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
     if (b < 1073741824) return (b / 1048576).toFixed(1) + ' MB';
     return (b / 1073741824).toFixed(2) + ' GB';
+  }
+  function fmtDuration(seconds) {
+    seconds = Math.max(0, Math.round(seconds));
+    if (seconds < 60) return seconds + ' s';
+    var minutes = Math.floor(seconds / 60);
+    var rest = seconds % 60;
+    if (minutes < 60) return minutes + ':' + String(rest).padStart(2, '0') + ' min';
+    var hours = Math.floor(minutes / 60);
+    return hours + ':' + String(minutes % 60).padStart(2, '0') + ':' + String(rest).padStart(2, '0') + ' h';
   }
   function esc(s) { return Lang.escape(String(s)); }
   function baseName(p) { return p.split('/').pop(); }
@@ -902,49 +912,96 @@
 
   function addFiles(entries) {
     if (!entries.length) return Promise.resolve();
-    var total = entries.length, done = 0, bytes = 0, totalBytes = 0;
+    var total = entries.length, done = 0, totalBytes = 0;
     entries.forEach(function (e) { totalBytes += e.file.size; });
 
-    var uploaded = 0;
-    progress('0 / ' + total + ' Dateien…');
-
-    var chain = Promise.resolve();
+    var cloudEnabled = Remote.configured();
+    var uploaded = 0, failed = 0, next = 0;
+    var uploadedBytes = 0, uploadStarted = Date.now();
+    var loadedByFile = entries.map(function () { return 0; });
     var batch = [];
+    var persistChain = Promise.resolve();
 
-    entries.forEach(function (ent) {
-      chain = chain.then(function () {
-        return readFile(ent.file, ent.path).then(function (rec) {
-          if (Remote.configured()) {
-            return Remote.upload(rec.path, ent.file, function (loaded, tot) {
-              progress('Hochladen ' + rec.name + ' – ' + fmtSize(bytes + loaded) + ' / ' + fmtSize(totalBytes));
-            }).then(function (result) {
-              rec.remote = true;
-              rec.etag = result && result.etag || '';
-              rec.blob = null;          // Inhalt liegt jetzt in R2
-              uploaded++;
-            }).catch(function (err) {
-              toast('Upload fehlgeschlagen (' + rec.name + '): ' + err.message, 5000);
-            }).then(function () { return rec; });
-          }
+    progress('0 / ' + total + ' Dateien werden vorbereitet…');
+
+    function flushBatch() {
+      if (!batch.length) return;
+      var current = batch;
+      batch = [];
+      persistChain = persistChain.then(function () { return DB.putMany(current); });
+    }
+
+    function showUploadProgress(name) {
+      var label = 'Hochladen ' + done + ' / ' + total + ' · ' + name + ' – ' +
+        fmtSize(uploadedBytes) + ' / ' + fmtSize(totalBytes);
+      var elapsed = (Date.now() - uploadStarted) / 1000;
+      if (uploadedBytes > 0 && elapsed >= 0.5) {
+        var rate = uploadedBytes / elapsed;
+        label += ' · ' + fmtSize(rate) + '/s';
+        if (rate > 0 && uploadedBytes < totalBytes) {
+          label += ' · Rest ' + fmtDuration((totalBytes - uploadedBytes) / rate);
+        }
+      }
+      progress(label);
+    }
+
+    function setFileProgress(idx, loaded, name) {
+      var value = Math.max(0, Math.min(loaded, entries[idx].file.size));
+      uploadedBytes += value - loadedByFile[idx];
+      loadedByFile[idx] = value;
+      showUploadProgress(name);
+    }
+
+    function processEntry(idx) {
+      var ent = entries[idx];
+      return readFile(ent.file, ent.path).then(function (rec) {
+        if (!cloudEnabled) return rec;
+        return Remote.upload(rec.path, ent.file, function (loaded) {
+          setFileProgress(idx, loaded, rec.name);
+        }).then(function (result) {
+          setFileProgress(idx, ent.file.size, rec.name);
+          rec.remote = true;
+          rec.etag = result && result.etag || '';
+          rec.blob = null;          // Inhalt liegt jetzt in R2
+          uploaded++;
           return rec;
-        }).then(function (rec) {
-          bytes += ent.file.size;
-          batch.push(rec);
-          done++;
-          if (done % 5 === 0 || done === total) progress(done + ' / ' + total + ' Dateien…');
-          if (batch.length >= 40) { var b = batch; batch = []; return DB.putMany(b); }
+        }).catch(function (err) {
+          failed++;
+          toast('Upload fehlgeschlagen (' + rec.name + '): ' + err.message, 5000);
+          return rec;
         });
+      }).then(function (rec) {
+        batch.push(rec);
+        if (batch.length >= 40) flushBatch();
+      }).catch(function (err) {
+        failed++;
+        toast('Datei fehlgeschlagen (' + ent.path + '): ' + err.message, 5000);
+      }).then(function () {
+        done++;
+        if (cloudEnabled) showUploadProgress(baseName(ent.path));
+        else progress(done + ' / ' + total + ' Dateien…');
       });
-    });
+    }
 
-    return chain.then(function () {
-      if (batch.length) return DB.putMany(batch);
+    function worker() {
+      if (next >= total) return Promise.resolve();
+      var idx = next++;
+      return processEntry(idx).then(worker);
+    }
+
+    var workers = [];
+    for (var i = 0; i < Math.min(IMPORT_CONCURRENCY, total); i++) workers.push(worker());
+
+    return Promise.all(workers).then(function () {
+      flushBatch();
+      return persistChain;
     }).then(function () {
       progress('');
       return refreshIndex();
     }).then(function () {
       toast(total + ' Datei' + (total === 1 ? '' : 'en') + ' hinzugefügt' +
-        (Remote.configured() ? ' · ' + uploaded + ' in die Cloud geladen' : ''));
+        (cloudEnabled ? ' · ' + uploaded + ' in die Cloud geladen' : '') +
+        (failed ? ' · ' + failed + ' fehlgeschlagen' : ''), failed ? 5000 : 2600);
     }).catch(function (e) {
       progress('');
       toast('Fehler: ' + e.message, 5000);
