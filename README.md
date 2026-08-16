@@ -82,7 +82,7 @@ Vor dem Deployment in `worker/wrangler.toml` die erlaubte Herkunft exakt eintrag
 ALLOWED_ORIGIN = "https://yafleton.github.io"
 ```
 
-Danach in WebLime **Sync → Cloud verbinden** öffnen und Worker-URL sowie Token eintragen. Die Worker-URL bleibt auf dem Gerät gespeichert; das Token nur bis zum Schließen des Browsers.
+Die Worker-URL `https://weblime-api.weblimer.workers.dev` ist im Frontend fest hinterlegt. Danach in WebLime **Sync → Cloud verbinden** öffnen und nur noch das `AUTH_TOKEN` eintragen. Das Token bleibt ausschließlich bis zum Schließen des Browsers gespeichert.
 
 ## Sicherheitsmodell
 
