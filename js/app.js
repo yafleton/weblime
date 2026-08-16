@@ -303,13 +303,16 @@
     var scale = Math.min(3, h / n);
     var w = mmBuffer.width;
 
-    for (var i = 0; i < n; i++) {
-      var text = doc.kind === 'file' ? doc.lines[i] : (doc.rows[i].t === 'hit' ? 'x'.repeat(40) : '');
+    // `n` bleibt für die Skalierung mindestens 1. Gezeichnet werden aber nur
+    // tatsächlich vorhandene Zeilen – eine Suche ohne Treffer hat count === 0.
+    for (var i = 0; i < doc.count; i++) {
+      var row = doc.kind === 'results' ? doc.rows[i] : null;
+      var text = doc.kind === 'file' ? doc.lines[i] : (row && row.t === 'hit' ? 'x'.repeat(40) : '');
       if (!text) continue;
       var indent = /^\s*/.exec(text)[0].length;
       var len = Math.min(text.length, 110);
       var y = i * scale;
-      var hit = doc.kind === 'file' ? matchesByLine[i] : (doc.rows[i].t === 'hit');
+      var hit = doc.kind === 'file' ? matchesByLine[i] : (row && row.t === 'hit');
       ctx.fillStyle = hit ? '#c9973b' : (/^\s*(\/\/|#|\*)/.test(text) ? '#4f5046' : '#6d6e63');
       ctx.fillRect(indent / 110 * w, y, Math.max(1, (len - indent) / 110 * w), Math.max(1, scale * 0.72));
     }
