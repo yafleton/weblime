@@ -115,6 +115,6 @@ worker/                       Cloudflare Worker vor dem privaten R2-Bucket
 ## Betriebsgrenzen
 
 - Textdateien bis 20 MB werden lokal indexiert.
-- Beim Cloud-Sync werden fehlende Textinhalte bis 5 MB automatisch in den Suchindex geladen.
+- Beim Cloud-Sync erscheint die Dateiliste sofort. Fehlende Textinhalte bis 5 MB werden danach mit bis zu zwölf parallelen Downloads im Hintergrund in den lokalen Suchindex geladen.
 - Der Browser-ZIP-Export ist zum Schutz vor Speicherabstürzen auf 400 MB und 65.535 Dateien begrenzt.
 - Dateien über 64 MiB werden in 64-MiB-Teilen mit bis zu drei parallelen Datenanfragen hochgeladen. Bei Dateien bis 8 MiB laufen bis zu zwölf Uploads gleichzeitig, damit Ordner mit vielen kleinen Dateien nicht durch die Wartezeit jeder Einzelanfrage ausgebremst werden. Währenddessen zeigt die Statusleiste Durchsatz und geschätzte Restzeit an.

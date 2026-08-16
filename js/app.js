@@ -13,6 +13,7 @@
   var SMALL_FILE_LIMIT = 8 * 1024 * 1024;
   var SMALL_IMPORT_CONCURRENCY = 12;
   var LARGE_IMPORT_CONCURRENCY = 3;
+  var INDEX_CONCURRENCY = 12;
 
   var $ = function (id) { return document.getElementById(id); };
   var el = {};
@@ -1187,13 +1188,34 @@
   /* ============================================================
      Cloud-Sync
      ============================================================ */
+  var remoteIndexJob = 0;
+
+  function clearIndexProgress() {
+    if ((el.stProgress.textContent || '').indexOf('Suchindex:') === 0) progress('');
+  }
+
+  function stopRemoteIndex() {
+    remoteIndexJob++;
+    clearIndexProgress();
+    return remoteIndexJob;
+  }
+
+  function showIndexProgress(done, total) {
+    var current = el.stProgress.textContent || '';
+    if (!current || current.indexOf('Suchindex:') === 0) {
+      progress('Suchindex: ' + done + ' / ' + total + ' Dateien · läuft im Hintergrund');
+    }
+  }
+
   function syncRemote(silent) {
     if (!Remote.configured()) {
       if (!silent) toast('Keine Cloud konfiguriert – Befehlspalette → "Cloud: Verbinden"');
       return Promise.resolve();
     }
+    var job = stopRemoteIndex();
     progress('Synchronisiere…');
     return Remote.list().then(function (files) {
+      if (job !== remoteIndexJob) return;
       var remoteMap = Object.create(null);
       var puts = [];
       files.forEach(function (f) {
@@ -1215,39 +1237,93 @@
         .then(function () {
           return stale.reduce(function (p, r) { return p.then(function () { return DB.del(r.path); }); }, Promise.resolve());
         })
-        .then(function () { return cacheRemoteTexts(remoteMap); })
         .then(function () { return refreshIndex(); })
-        .then(function () {
+        .then(function () { return missingRemoteTexts(); })
+        .then(function (pending) {
+          if (job !== remoteIndexJob) return;
           progress('');
-          if (!silent) toast(files.length + ' Dateien in der Cloud · Index aktuell');
+          if (!silent) {
+            toast(files.length + ' Dateien verfügbar' +
+              (pending.items.length ? ' · Suchindex läuft im Hintergrund' : ' · Index aktuell'));
+          }
+          if (pending.items.length) startRemoteTextIndex(pending, job, silent);
         });
     }).catch(function (e) {
+      if (job !== remoteIndexJob) return;
       progress('');
       toast('Cloud-Fehler: ' + e.message, 5000);
     });
   }
 
-  /** Holt Textinhalte, die lokal noch fehlen — sonst findet die Suche sie nicht. */
-  function cacheRemoteTexts(remoteMap) {
+  /** Fehlende Textinhalte bestimmen — die Dateiliste ist davon unabhängig. */
+  function missingRemoteTexts() {
     return DB.index().then(function (list) {
-      var need = list.filter(function (r) {
-        return r.remote && !r.binary && !r.cached && r.size <= 5 * 1024 * 1024;
+      var eligible = list.filter(function (r) {
+        return r.remote && !r.binary && r.size <= 5 * 1024 * 1024;
       });
-      if (!need.length) return;
-      var done = 0;
-      return need.reduce(function (p, r) {
-        return p.then(function () {
-          progress('Index: ' + (++done) + ' / ' + need.length + ' Dateien…');
-          return Remote.getText(r.path).then(function (t) {
-            return DB.get(r.path).then(function (full) {
-              if (!full) return;
-              full.text = t.replace(/\r\n?/g, '\n');
-              full.lines = full.text.split('\n').length;
-              return DB.put(full);
-            });
-          }).catch(function () { /* einzelne Fehler ignorieren */ });
+      var items = eligible.filter(function (r) { return !r.cached; });
+      return { items: items, total: eligible.length, cached: eligible.length - items.length };
+    });
+  }
+
+  /** Lädt mehrere Textdateien parallel und hält die Oberfläche dabei benutzbar. */
+  function cacheRemoteTexts(pending, job) {
+    var need = pending.items;
+    var next = 0, done = 0, indexed = 0, failed = 0, lastPaint = 0;
+
+    function paint(force) {
+      var now = Date.now();
+      if (force || done === need.length || now - lastPaint >= 200) {
+        lastPaint = now;
+        showIndexProgress(pending.cached + done, pending.total);
+      }
+    }
+
+    function worker() {
+      if (job !== remoteIndexJob || next >= need.length) return Promise.resolve();
+      var rec = need[next++];
+      return Remote.getText(rec.path).then(function (text) {
+        if (job !== remoteIndexJob) return;
+        return DB.get(rec.path).then(function (full) {
+          if (job !== remoteIndexJob || !full || !full.remote || full.etag !== rec.etag) return;
+          full.text = text.replace(/\r\n?/g, '\n');
+          full.lines = full.text.split('\n').length;
+          return DB.put(full).then(function () { indexed++; });
         });
-      }, Promise.resolve());
+      }).catch(function () {
+        if (job === remoteIndexJob) failed++;
+      }).then(function () {
+        if (job !== remoteIndexJob) return;
+        done++;
+        paint(false);
+        return worker();
+      });
+    }
+
+    paint(true);
+    var workers = [];
+    for (var i = 0; i < Math.min(INDEX_CONCURRENCY, need.length); i++) workers.push(worker());
+    return Promise.all(workers).then(function () {
+      if (job !== remoteIndexJob) return null;
+      paint(true);
+      return { total: pending.total, indexed: indexed, failed: failed };
+    });
+  }
+
+  function startRemoteTextIndex(pending, job, silent) {
+    cacheRemoteTexts(pending, job).then(function (result) {
+      if (!result || job !== remoteIndexJob) return;
+      clearIndexProgress();
+      return refreshIndex().then(function () {
+        if (!silent) {
+          toast('Suchindex fertig · ' + result.indexed + ' Dateien gespeichert' +
+            (result.failed ? ' · ' + result.failed + ' übersprungen' : ''), result.failed ? 5000 : 2600);
+        }
+      });
+    }).catch(function (e) {
+      if (job !== remoteIndexJob) return;
+      clearIndexProgress();
+      if (!silent) toast('Suchindex fehlgeschlagen: ' + e.message, 5000);
     });
   }
 
@@ -1363,6 +1439,7 @@
     { name: 'Cloud: Synchronisieren', hint: 'Dateiliste + Suchindex aktualisieren', run: function () { syncRemote(); } },
     { name: 'Cloud: Lokale Dateien hochladen', hint: 'Alles Lokale in die Cloud schieben', run: pushAllToRemote },
     { name: 'Cloud: Trennen', hint: 'Zugangsdaten aus dem Browser löschen', run: function () {
+        stopRemoteIndex();
         Remote.configure({ token: '' }); updateStatusCount(); toast('Cloud getrennt');
       } },
     { name: 'Datei herunterladen', hint: 'Aktuelle Datei speichern', run: function () {
@@ -1376,6 +1453,7 @@
       } },
     { name: 'Lokalen Cache leeren', hint: 'Cloud-Dateien bleiben erhalten', run: function () {
         if (!confirm('Lokalen Index wirklich leeren?')) return;
+        stopRemoteIndex();
         DB.clear().then(function () {
           state.tabs = []; state.active = -1; state.doc = null;
           renderTabs(); el.editorContent.innerHTML = ''; showWelcome(true);
