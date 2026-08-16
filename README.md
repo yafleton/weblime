@@ -46,7 +46,7 @@ Das Repository enthält bereits `.github/workflows/pages.yml`. Bei jedem Push au
 4. Unter **Build and deployment** als Quelle **GitHub Actions** wählen.
 5. Unter **Actions** warten, bis der Workflow **GitHub Pages** erfolgreich ist.
 
-Die Website ist anschließend unter `https://DEIN-NAME.github.io/REPOSITORY/` erreichbar.
+Die Website ist unter `https://yafleton.github.io/weblime/` erreichbar.
 
 ## Optional: Cloud-Speicher mit Cloudflare R2
 
@@ -79,7 +79,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 Vor dem Deployment in `worker/wrangler.toml` die erlaubte Herkunft exakt eintragen. Bei GitHub Pages gehört der Repository-Pfad nicht zur Origin:
 
 ```toml
-ALLOWED_ORIGIN = "https://DEIN-NAME.github.io"
+ALLOWED_ORIGIN = "https://yafleton.github.io"
 ```
 
 Danach in WebLime **Sync → Cloud verbinden** öffnen und Worker-URL sowie Token eintragen. Die Worker-URL bleibt auf dem Gerät gespeichert; das Token nur bis zum Schließen des Browsers.
