@@ -1,0 +1,9 @@
+.wrangler/
+.claude/
+worker/.wrangler/
+node_modules/
+.dev.vars
+worker/.dev.vars
+.DS_Store
+Thumbs.db
+_site/

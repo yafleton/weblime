@@ -1,0 +1,16 @@
+name = "weblime-api"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+# R2-Bucket (vorher anlegen:  wrangler r2 bucket create weblime)
+[[r2_buckets]]
+binding = "BUCKET"
+bucket_name = "weblime"
+
+[vars]
+# Vor dem Deployment auf die exakte GitHub-Pages-Origin setzen.
+# Der Repository-Pfad gehört nicht zur Origin.
+ALLOWED_ORIGIN = "https://DEIN-NAME.github.io"
+
+# AUTH_TOKEN wird NICHT hier eingetragen, sondern als Secret:
+#   wrangler secret put AUTH_TOKEN

@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="WebLime organisiert, durchsucht und synchronisiert ganze Projektordner direkt im Browser.">
+<meta name="theme-color" content="#10120f">
+<meta name="color-scheme" content="dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'none'; object-src 'none'; form-action 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http://localhost:*; img-src 'self' data: blob:; media-src 'self' blob:; frame-src blob:; worker-src 'self'">
+<title>WebLime — Projekte sofort durchsuchen</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside id="sidebar" aria-label="Projektdateien">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><span>W</span></div>
+      <div class="brand-copy">
+        <strong>WebLime</strong>
+        <span>Project explorer</span>
+      </div>
+      <span id="cloud-state" class="cloud-state local">Lokal</span>
+    </div>
+    <div class="side-head">
+      <span class="side-title">Projekt</span>
+      <div class="side-actions">
+        <button type="button" id="btn-add-files" class="icon-btn" title="Dateien hinzufügen" aria-label="Dateien hinzufügen">＋</button>
+        <button type="button" id="btn-add-folder" class="icon-btn" title="Ordner hinzufügen" aria-label="Ordner hinzufügen">▱</button>
+        <button type="button" id="btn-menu" class="icon-btn" title="Befehlspalette öffnen" aria-label="Befehlspalette öffnen">⋯</button>
+      </div>
+    </div>
+    <div class="side-filter">
+      <span aria-hidden="true">⌕</span>
+      <input id="tree-filter" type="search" placeholder="Dateien filtern…" spellcheck="false" aria-label="Dateien filtern">
+    </div>
+    <div id="tree" class="tree" role="tree" aria-label="Dateibaum"></div>
+    <div id="side-empty" class="side-empty">
+      <span class="empty-icon" aria-hidden="true">⌁</span>
+      <p>Noch kein Projekt geöffnet.</p>
+      <p>Ziehe einen Ordner hierher oder wähle ihn aus.</p>
+      <button type="button" id="side-open-folder" class="ghost-btn">Ordner auswählen</button>
+    </div>
+  </aside>
+
+  <div id="drag-handle"></div>
+
+  <!-- ============ MAIN ============ -->
+  <main id="main">
+    <header class="main-head">
+      <div class="head-title">
+        <button type="button" id="btn-mobile-sidebar" class="icon-btn mobile-menu" aria-label="Projektleiste öffnen">☰</button>
+        <div>
+          <strong>Workspace</strong>
+          <span>Dateien ansehen, finden und sicher synchronisieren</span>
+        </div>
+      </div>
+      <div class="quick-actions">
+        <button type="button" id="btn-quick-find" class="head-btn"><span>⌕</span> Datei öffnen <kbd>Strg P</kbd></button>
+        <button type="button" id="btn-quick-search" class="head-btn"><span>◎</span> Projektsuche</button>
+        <button type="button" id="btn-quick-sync" class="head-btn accent"><span>↻</span> Sync</button>
+      </div>
+    </header>
+
+    <div id="tabbar" class="tabbar" role="tablist" aria-label="Geöffnete Dateien"></div>
+
+    <div id="editor-area" class="editor-area">
+      <div id="editor-scroll" class="editor-scroll" tabindex="0">
+        <div id="editor-content" class="editor-content"></div>
+      </div>
+      <canvas id="minimap" class="minimap" width="110" aria-label="Dateiübersicht"></canvas>
+      <div id="binview" class="binview hidden"></div>
+      <div id="welcome" class="welcome">
+        <div class="welcome-glow" aria-hidden="true"></div>
+        <div class="eyebrow"><span></span> Dein Projekt. Sofort durchsuchbar.</div>
+        <h1>Finde jede Zeile.<br><em>Ohne Umwege.</em></h1>
+        <p class="sub">Öffne einen kompletten Projektordner und durchsuche selbst große Codebasen direkt im Browser. Lokal, schnell und optional mit deiner privaten Cloud synchronisiert.</p>
+        <div class="welcome-actions">
+          <button type="button" id="welcome-open-folder" class="welcome-primary">Ordner öffnen <span>→</span></button>
+          <button type="button" id="welcome-add-files" class="welcome-secondary">Dateien wählen</button>
+        </div>
+        <div class="feature-row" aria-label="Vorteile">
+          <div><span class="feature-dot"></span><strong>Lokal zuerst</strong><small>Deine Suche bleibt im Browser</small></div>
+          <div><span class="feature-dot"></span><strong>Projektweit</strong><small>Regex, Filter und Symbole</small></div>
+          <div><span class="feature-dot"></span><strong>Cloud optional</strong><small>R2-Sync für alle Geräte</small></div>
+        </div>
+        <div class="shortcut-line">
+          <span><kbd>Strg P</kbd> Datei öffnen</span>
+          <span><kbd>Strg ⇧ F</kbd> alles durchsuchen</span>
+          <span><kbd>Strg ⇧ P</kbd> Befehle</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Find in current file -->
+    <div id="findbar" class="findbar hidden" role="search" aria-label="In Datei suchen">
+      <input id="find-input" type="text" placeholder="In dieser Datei suchen…" spellcheck="false" aria-label="Suchbegriff">
+      <div class="opt-group">
+        <button type="button" class="opt" data-opt="case" title="Groß-/Kleinschreibung beachten" aria-label="Groß-/Kleinschreibung beachten" aria-pressed="false">Aa</button>
+        <button type="button" class="opt" data-opt="word" title="Ganzes Wort" aria-label="Ganzes Wort" aria-pressed="false">ab|</button>
+        <button type="button" class="opt" data-opt="regex" title="Regulärer Ausdruck" aria-label="Regulärer Ausdruck" aria-pressed="false">.*</button>
+      </div>
+      <span id="find-count" class="find-count" aria-live="polite">0 Treffer</span>
+      <button type="button" id="find-prev" class="tbtn" title="Vorheriger (Shift+F3)" aria-label="Vorheriger Treffer">▲</button>
+      <button type="button" id="find-next" class="tbtn" title="Nächster (F3)" aria-label="Nächster Treffer">▼</button>
+      <button type="button" id="find-close" class="tbtn" title="Schließen (Esc)" aria-label="Suche schließen">✕</button>
+    </div>
+
+    <!-- Find in files panel -->
+    <div id="fif" class="fif hidden" role="search" aria-label="Im Projekt suchen">
+      <div class="fif-row">
+        <label for="fif-query">Suchen</label>
+        <input id="fif-query" type="text" placeholder="Suchbegriff…" spellcheck="false">
+        <div class="opt-group">
+          <button type="button" class="opt" data-fopt="case" title="Groß-/Kleinschreibung beachten" aria-label="Groß-/Kleinschreibung beachten" aria-pressed="false">Aa</button>
+          <button type="button" class="opt" data-fopt="word" title="Ganzes Wort" aria-label="Ganzes Wort" aria-pressed="false">ab|</button>
+          <button type="button" class="opt" data-fopt="regex" title="Regulärer Ausdruck" aria-label="Regulärer Ausdruck" aria-pressed="false">.*</button>
+        </div>
+        <button type="button" id="fif-run" class="primary">Suchen</button>
+      </div>
+      <div class="fif-row">
+        <label for="fif-include">Wo</label>
+        <input id="fif-include" type="text" placeholder="*.js, src/**  (leer = alles)" spellcheck="false">
+        <label class="lbl2" for="fif-exclude">Ausschließen</label>
+        <input id="fif-exclude" type="text" placeholder="node_modules/**, *.min.js" spellcheck="false">
+        <button type="button" id="fif-close" class="tbtn" title="Schließen (Esc)" aria-label="Projektsuche schließen">✕</button>
+      </div>
+    </div>
+
+    <div id="status" class="status" role="status" aria-live="polite">
+      <span id="st-file">Keine Datei</span>
+      <span class="sep"></span>
+      <span id="st-pos"></span>
+      <span class="grow"></span>
+      <span id="st-progress" class="st-progress"></span>
+      <span id="st-count"></span>
+      <span class="sep"></span>
+      <span id="st-lang"></span>
+    </div>
+  </main>
+</div>
+
+<!-- ============ OVERLAYS ============ -->
+<div id="palette" class="palette hidden" role="dialog" aria-modal="true" aria-label="Befehlspalette">
+  <div class="palette-box">
+    <label class="sr-only" for="palette-input">Datei oder Befehl suchen</label>
+    <input id="palette-input" type="text" spellcheck="false" autocomplete="off" aria-controls="palette-list">
+    <div id="palette-list" class="palette-list" role="listbox"></div>
+  </div>
+</div>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true" aria-label="Cloud verbinden">
+  <div class="modal-box" id="modal-body"></div>
+</div>
+
+<div id="dropzone" class="dropzone hidden"><div class="dz-inner"><span>↓</span><strong>Projekt hier ablegen</strong><small>Dateien und Ordner werden sicher eingelesen</small></div></div>
+
+<div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+<input id="file-input" type="file" multiple hidden>
+<input id="dir-input" type="file" multiple webkitdirectory directory hidden>
+<input id="import-input" type="file" accept=".json,.wlz" hidden>
+
+<script src="js/db.js"></script>
+<script src="js/lang.js"></script>
+<script src="js/zip.js"></script>
+<script src="js/backend.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
