@@ -1,0 +1,11 @@
+{
+  "name": "WebLime Project Explorer",
+  "short_name": "WebLime",
+  "description": "Projektordner direkt im Browser öffnen, durchsuchen und optional synchronisieren.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0f110e",
+  "theme_color": "#0f110e",
+  "lang": "de-DE"
+}
