@@ -1217,9 +1217,7 @@
     el.modal.classList.remove('hidden');
     el.modalBody.innerHTML =
       '<h2>Cloud verbinden</h2>' +
-      '<p class="m-sub">Cloudflare Worker + R2. Siehe <code>README.md</code> für das Setup.</p>' +
-      '<label>Worker-URL</label>' +
-      '<input id="m-base" type="text" placeholder="https://weblime.dein-name.workers.dev" value="' + esc(c.base) + '">' +
+      '<p class="m-sub">Die WebLime-Cloud ist bereits eingerichtet. Gib nur dein geheimes Zugriffstoken ein.</p>' +
       '<label>Zugriffs-Token</label>' +
       '<input id="m-token" type="password" placeholder="AUTH_TOKEN aus dem Worker" value="' + esc(c.token) + '">' +
       '<p class="m-sub">Das Token wird nur bis zum Schließen des Browsers gespeichert.</p>' +
@@ -1231,12 +1229,9 @@
 
     $('m-cancel').onclick = closeModal;
     $('m-save').onclick = function () {
-      var base = $('m-base').value.trim();
       var token = $('m-token').value.trim();
-      if (!base) { $('m-status').textContent = 'Bitte Worker-URL eintragen.'; return; }
-      if (!Remote.validBase(base)) { $('m-status').textContent = 'Bitte eine HTTPS-URL eintragen (lokal ist HTTP erlaubt).'; return; }
       if (!token) { $('m-status').textContent = 'Bitte das Zugriffs-Token eintragen.'; return; }
-      Remote.configure({ base: base, token: token });
+      Remote.configure({ token: token });
       $('m-status').textContent = 'Verbinde…';
       Remote.ping().then(function (r) {
         $('m-status').textContent = 'Verbunden ✓ ' + (r.files != null ? r.files + ' Dateien im Bucket' : '');
@@ -1248,7 +1243,7 @@
         $('m-status').textContent = 'Fehlgeschlagen: ' + e.message;
       });
     };
-    setTimeout(function () { $('m-base').focus(); }, 30);
+    setTimeout(function () { $('m-token').focus(); }, 30);
   }
   function closeModal() { el.modal.classList.add('hidden'); el.modalBody.innerHTML = ''; }
   el.modal.addEventListener('mousedown', function (e) { if (e.target === el.modal) closeModal(); });
@@ -1300,7 +1295,7 @@
     { name: 'Cloud: Synchronisieren', hint: 'Dateiliste + Suchindex aktualisieren', run: function () { syncRemote(); } },
     { name: 'Cloud: Lokale Dateien hochladen', hint: 'Alles Lokale in die Cloud schieben', run: pushAllToRemote },
     { name: 'Cloud: Trennen', hint: 'Zugangsdaten aus dem Browser löschen', run: function () {
-        Remote.configure({ base: '', token: '' }); updateStatusCount(); toast('Cloud getrennt');
+        Remote.configure({ token: '' }); updateStatusCount(); toast('Cloud getrennt');
       } },
     { name: 'Datei herunterladen', hint: 'Aktuelle Datei speichern', run: function () {
         var t = state.tabs[state.active];

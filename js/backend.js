@@ -1,6 +1,7 @@
 /* ============================================================
    backend.js — Client für den Cloudflare Worker (R2-Speicher)
-   Konfiguration liegt in localStorage: Basis-URL + Token.
+   Die Worker-URL gehört fest zur WebLime-Installation. Nur das geheime
+   Zugriffstoken wird für die aktuelle Browsersitzung gespeichert.
    Große Dateien werden per Multipart-Upload in Teilen gesendet
    (Workers begrenzen den Request-Body, R2 selbst nicht).
    ============================================================ */
@@ -9,6 +10,7 @@
 
   var LS = 'weblime.remote';
   var SS_TOKEN = 'weblime.remote.token';
+  var DEFAULT_BASE = 'https://weblime-api.weblimer.workers.dev';
   var PART = 20 * 1024 * 1024;   // 20 MB pro Teil
   var MPU_THRESHOLD = 40 * 1024 * 1024;
 
@@ -23,22 +25,22 @@
       var token = sessionStorage.getItem(SS_TOKEN) || saved.token || '';
       if (saved.token) {
         sessionStorage.setItem(SS_TOKEN, saved.token);
-        localStorage.setItem(LS, JSON.stringify({ base: saved.base || '' }));
       }
-      return { base: String(saved.base || '').replace(/\/+$/, ''), token: token };
+      localStorage.removeItem(LS);
+      return { base: DEFAULT_BASE, token: token };
     } catch (e) { /* ignorieren */ }
-    return { base: '', token: '' };
+    return { base: DEFAULT_BASE, token: '' };
   }
 
   function save(c) {
-    cfg = { base: String(c.base || '').replace(/\/+$/, ''), token: String(c.token || '') };
-    localStorage.setItem(LS, JSON.stringify({ base: cfg.base }));
+    cfg = { base: DEFAULT_BASE, token: String(c.token || '') };
+    localStorage.removeItem(LS);
     if (cfg.token) sessionStorage.setItem(SS_TOKEN, cfg.token);
     else sessionStorage.removeItem(SS_TOKEN);
     return cfg;
   }
 
-  function configured() { return !!cfg.base; }
+  function configured() { return !!(cfg.base && cfg.token); }
 
   function url(p, params) {
     var u = cfg.base + p;
