@@ -10,7 +10,9 @@
   var GUTTER_MIN = 52;
   var MAX_TEXT = 20 * 1024 * 1024;   // größer wird nicht als Text indexiert
   var OVERSCAN = 12;
-  var IMPORT_CONCURRENCY = 3;
+  var SMALL_FILE_LIMIT = 8 * 1024 * 1024;
+  var SMALL_IMPORT_CONCURRENCY = 12;
+  var LARGE_IMPORT_CONCURRENCY = 3;
 
   var $ = function (id) { return document.getElementById(id); };
   var el = {};
@@ -916,7 +918,7 @@
     entries.forEach(function (e) { totalBytes += e.file.size; });
 
     var cloudEnabled = Remote.configured();
-    var uploaded = 0, failed = 0, next = 0;
+    var uploaded = 0, failed = 0;
     var uploadedBytes = 0, uploadStarted = Date.now();
     var loadedByFile = entries.map(function () { return 0; });
     var batch = [];
@@ -983,14 +985,23 @@
       });
     }
 
-    function worker() {
-      if (next >= total) return Promise.resolve();
-      var idx = next++;
-      return processEntry(idx).then(worker);
+    function worker(queue) {
+      if (queue.next >= queue.items.length) return Promise.resolve();
+      var idx = queue.items[queue.next++];
+      return processEntry(idx).then(function () { return worker(queue); });
     }
 
+    var smallQueue = { items: [], next: 0 };
+    var largeQueue = { items: [], next: 0 };
+    entries.forEach(function (entry, idx) {
+      (entry.file.size <= SMALL_FILE_LIMIT ? smallQueue : largeQueue).items.push(idx);
+    });
+
     var workers = [];
-    for (var i = 0; i < Math.min(IMPORT_CONCURRENCY, total); i++) workers.push(worker());
+    var smallWorkers = Math.min(SMALL_IMPORT_CONCURRENCY, smallQueue.items.length);
+    var largeWorkers = Math.min(LARGE_IMPORT_CONCURRENCY, largeQueue.items.length);
+    for (var i = 0; i < smallWorkers; i++) workers.push(worker(smallQueue));
+    for (var j = 0; j < largeWorkers; j++) workers.push(worker(largeQueue));
 
     return Promise.all(workers).then(function () {
       flushBatch();

@@ -12,13 +12,18 @@
   var SS_TOKEN = 'weblime.remote.token';
   var DEFAULT_BASE = 'https://weblime-api.weblimer.workers.dev';
   // 64 MiB bleiben deutlich unter dem 100-MB-Request-Limit des Free-Plans.
-  // Drei gemeinsame Slots beschleunigen sowohl Multipart- als auch Ordner-Uploads,
-  // ohne pro Datei eine eigene, ungebremste Request-Gruppe zu starten.
+  // Kleine Dateien brauchen mehr Parallelität, weil bei ihnen die Wartezeit pro
+  // Anfrage stärker ins Gewicht fällt. Große Datenblöcke bleiben bewusst auf drei
+  // gleichzeitige Requests begrenzt.
   var PART = 64 * 1024 * 1024;
   var MPU_THRESHOLD = PART;
-  var UPLOAD_CONCURRENCY = 3;
-  var uploadActive = 0;
-  var uploadQueue = [];
+  var SMALL_UPLOAD_LIMIT = 8 * 1024 * 1024;
+  var SMALL_UPLOAD_CONCURRENCY = 12;
+  var LARGE_UPLOAD_CONCURRENCY = 3;
+  var uploadLanes = {
+    small: { active: 0, limit: SMALL_UPLOAD_CONCURRENCY, queue: [] },
+    large: { active: 0, limit: LARGE_UPLOAD_CONCURRENCY, queue: [] }
+  };
 
   var cfg = load();
 
@@ -97,27 +102,28 @@
   }
 
   /* ---------------- Upload mit Fortschritt ---------------- */
-  function startUploadJob(job) {
-    uploadActive++;
+  function startUploadJob(lane, job) {
+    lane.active++;
     Promise.resolve()
       .then(job.run)
       .then(job.resolve, job.reject)
       .then(function () {
-        uploadActive--;
-        pumpUploads();
+        lane.active--;
+        pumpUploads(lane);
       });
   }
 
-  function pumpUploads() {
-    while (uploadActive < UPLOAD_CONCURRENCY && uploadQueue.length) {
-      startUploadJob(uploadQueue.shift());
+  function pumpUploads(lane) {
+    while (lane.active < lane.limit && lane.queue.length) {
+      startUploadJob(lane, lane.queue.shift());
     }
   }
 
-  function withUploadSlot(run) {
+  function withUploadSlot(laneName, run) {
+    var lane = uploadLanes[laneName];
     return new Promise(function (resolve, reject) {
-      uploadQueue.push({ run: run, resolve: resolve, reject: reject });
-      pumpUploads();
+      lane.queue.push({ run: run, resolve: resolve, reject: reject });
+      pumpUploads(lane);
     });
   }
 
@@ -141,8 +147,9 @@
     });
   }
 
-  function xhrPut(fullUrl, body, onProgress) {
-    return withUploadSlot(function () { return xhrPutDirect(fullUrl, body, onProgress); });
+  function xhrPut(fullUrl, body, onProgress, laneName) {
+    var lane = laneName || (body.size <= SMALL_UPLOAD_LIMIT ? 'small' : 'large');
+    return withUploadSlot(lane, function () { return xhrPutDirect(fullUrl, body, onProgress); });
   }
 
   function uploadPartsInParallel(count, uploadPart) {
@@ -152,7 +159,7 @@
       var firstError = null;
 
       function schedule() {
-        while (!firstError && active < UPLOAD_CONCURRENCY && next < count) {
+        while (!firstError && active < LARGE_UPLOAD_CONCURRENCY && next < count) {
           var idx = next++;
           active++;
           Promise.resolve()
@@ -245,7 +252,8 @@
             return xhrPut(
               url('/api/mpu/part', { path: path, uploadId: uploadId, part: idx + 1 }),
               chunk,
-              function (loaded) { reportPart(idx, loaded, chunk.size); }
+              function (loaded) { reportPart(idx, loaded, chunk.size); },
+              'large'
             ).then(function (r) {
               reportPart(idx, chunk.size, chunk.size);
               parts.push({ partNumber: idx + 1, etag: r.etag });

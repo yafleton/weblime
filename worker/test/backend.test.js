@@ -86,19 +86,15 @@ test('lädt große Dateien in 64-MiB-Teilen mit höchstens drei parallelen Reque
   assert.deepEqual(completedParts.map(part => part.partNumber), [1, 2, 3, 4]);
 });
 
-test('begrenzt auch mehrere kleine Dateien gemeinsam auf drei Uploads', async () => {
+test('lädt bis zu zwölf kleine Dateien parallel', async () => {
   active = 0;
   maxActive = 0;
   sentSizes = [];
 
-  await Promise.all([
-    Remote.upload('1.txt', fakeFile(1)),
-    Remote.upload('2.txt', fakeFile(1)),
-    Remote.upload('3.txt', fakeFile(1)),
-    Remote.upload('4.txt', fakeFile(1)),
-    Remote.upload('5.txt', fakeFile(1))
-  ]);
+  const uploads = [];
+  for (let i = 1; i <= 20; i++) uploads.push(Remote.upload(i + '.txt', fakeFile(1)));
+  await Promise.all(uploads);
 
-  assert.equal(sentSizes.length, 5);
-  assert.equal(maxActive, 3);
+  assert.equal(sentSizes.length, 20);
+  assert.equal(maxActive, 12);
 });
