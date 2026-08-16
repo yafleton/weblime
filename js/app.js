@@ -13,7 +13,6 @@
   var SMALL_FILE_LIMIT = 8 * 1024 * 1024;
   var SMALL_IMPORT_CONCURRENCY = 12;
   var LARGE_IMPORT_CONCURRENCY = 3;
-  var INDEX_CONCURRENCY = 12;
 
   var $ = function (id) { return document.getElementById(id); };
   var el = {};
@@ -769,12 +768,13 @@
   /* ============================================================
      Suche in allen Dateien
      ============================================================ */
-  var worker = null, jobId = 0, jobResults = [], jobStart = 0;
+  var worker = null, jobId = 0, jobResults = [], jobStart = 0, jobMode = 'local';
 
   function getWorker() {
     if (worker) return worker;
     worker = new Worker('js/search-worker.js');
     worker.onmessage = function (e) {
+      if (jobMode !== 'local') return;
       var m = e.data;
       if (m.type === 'results') {
         jobResults = jobResults.concat(m.results);
@@ -827,9 +827,83 @@
     jobResults = [];
     jobStart = performance.now();
     progress('Suche läuft…');
+    if (Remote.configured()) {
+      runCloudSearch(q);
+      return;
+    }
+    jobId++;
+    jobMode = 'local';
     getWorker().postMessage({
       type: 'search', query: q, opts: state.fifOpts,
       include: el.fifInclude.value, exclude: el.fifExclude.value
+    });
+  }
+
+  function runCloudSearch(query) {
+    var id = ++jobId;
+    var cursor = 0;
+    var totalMatches = 0;
+    var scannedChunks = 0;
+    var indexedFiles = 0;
+    var incomplete = false;
+    var truncated = false;
+    var byPath = Object.create(null);
+    jobMode = 'cloud';
+    if (worker) worker.postMessage({ type: 'cancel' });
+
+    function merge(results) {
+      results.forEach(function (result) {
+        var existing = byPath[result.path];
+        if (!existing) {
+          existing = byPath[result.path] = {
+            path: result.path, name: result.name, hits: [], total: 0, capped: false
+          };
+        }
+        existing.hits = existing.hits.concat(result.hits || []);
+        existing.total += result.total || (result.hits || []).length;
+        existing.capped = existing.capped || result.capped;
+      });
+    }
+
+    function page() {
+      if (id !== jobId) return Promise.resolve();
+      return Remote.search({
+        query: query,
+        opts: state.fifOpts,
+        include: el.fifInclude.value,
+        exclude: el.fifExclude.value,
+        cursor: cursor,
+        maxResults: Math.max(1, 20000 - totalMatches)
+      }).then(function (result) {
+        if (id !== jobId) return;
+        merge(result.results || []);
+        totalMatches += result.matches || 0;
+        scannedChunks += result.scannedChunks || 0;
+        indexedFiles = result.indexedFiles || indexedFiles;
+        if (result.complete === false) incomplete = true;
+        truncated = truncated || !!result.truncated || totalMatches >= 20000;
+        cursor = result.cursor || cursor;
+        progress(indexedFiles + ' Cloud-Dateien · ' + totalMatches + ' Treffer…');
+        if (!result.done && !truncated) return page();
+
+        jobResults = Object.keys(byPath).map(function (path) { return byPath[path]; });
+        progress('');
+        showResults({
+          matches: totalMatches,
+          files: jobResults.length,
+          scanned: indexedFiles,
+          scannedChunks: scannedChunks,
+          truncated: truncated,
+          incomplete: incomplete
+        });
+      });
+    }
+
+    page().catch(function (error) {
+      if (id !== jobId) return;
+      progress('');
+      el.fifQuery.classList.add('bad');
+      toast('Cloud-Suche fehlgeschlagen: ' + error.message, 5000);
     });
   }
 
@@ -839,7 +913,9 @@
     jobResults.sort(function (a, b) { return a.path.localeCompare(b.path); });
     var summary = info.matches + (info.matches === 1 ? ' Treffer in ' : ' Treffer in ') +
       info.files + (info.files === 1 ? ' Datei (' : ' Dateien (') +
-      info.scanned + ' durchsucht, ' + ms + ' ms)' + (info.truncated ? ' – gekürzt' : '');
+      info.scanned + ' durchsucht, ' + ms + ' ms)' +
+      (info.incomplete ? ' · Cloud-Index wird noch aufgebaut' : '') +
+      (info.truncated ? ' – gekürzt' : '');
 
     var doc = makeResultsDoc(q, jobResults, summary);
     state.lastResults = { query: q, results: jobResults };
@@ -1188,23 +1264,43 @@
   /* ============================================================
      Cloud-Sync
      ============================================================ */
-  var remoteIndexJob = 0;
+  var cloudIndexJob = 0;
 
-  function clearIndexProgress() {
-    if ((el.stProgress.textContent || '').indexOf('Suchindex:') === 0) progress('');
-  }
-
-  function stopRemoteIndex() {
-    remoteIndexJob++;
-    clearIndexProgress();
-    return remoteIndexJob;
-  }
-
-  function showIndexProgress(done, total) {
+  function showCloudIndexProgress(done, total) {
     var current = el.stProgress.textContent || '';
-    if (!current || current.indexOf('Suchindex:') === 0) {
-      progress('Suchindex: ' + done + ' / ' + total + ' Dateien · läuft im Hintergrund');
+    if (!current || current.indexOf('Cloud-Index:') === 0) {
+      progress('Cloud-Index: ' + done + (total ? ' / ' + total : '') + ' Dateien…');
     }
+  }
+
+  function buildCloudIndex(total, silent) {
+    var job = ++cloudIndexJob;
+    return Remote.indexStatus().then(function (status) {
+      if (job !== cloudIndexJob || status.complete) return status;
+
+      function next() {
+        if (job !== cloudIndexJob) return Promise.resolve();
+        return Remote.rebuildIndex().then(function (result) {
+          if (job !== cloudIndexJob) return;
+          showCloudIndexProgress(result.processed || 0, total);
+          if (!result.done) return next();
+          if ((el.stProgress.textContent || '').indexOf('Cloud-Index:') === 0) progress('');
+          if (!silent) {
+            var indexed = result.status && result.status.indexed || 0;
+            var skipped = result.status && result.status.skipped || 0;
+            toast('Cloud-Suchindex fertig · ' + indexed + ' Textdateien' +
+              (skipped ? ' · ' + skipped + ' Binär-/Großdateien ausgelassen' : ''), 5000);
+          }
+          return result.status;
+        });
+      }
+      showCloudIndexProgress(status.processed || 0, total);
+      return next();
+    }).catch(function (error) {
+      if (job !== cloudIndexJob) return;
+      if ((el.stProgress.textContent || '').indexOf('Cloud-Index:') === 0) progress('');
+      if (!silent) toast('Cloud-Index pausiert: ' + error.message, 6000);
+    });
   }
 
   function syncRemote(silent) {
@@ -1212,10 +1308,8 @@
       if (!silent) toast('Keine Cloud konfiguriert – Befehlspalette → "Cloud: Verbinden"');
       return Promise.resolve();
     }
-    var job = stopRemoteIndex();
     progress('Synchronisiere…');
     return Remote.list().then(function (files) {
-      if (job !== remoteIndexJob) return;
       var remoteMap = Object.create(null);
       var puts = [];
       files.forEach(function (f) {
@@ -1238,92 +1332,14 @@
           return stale.reduce(function (p, r) { return p.then(function () { return DB.del(r.path); }); }, Promise.resolve());
         })
         .then(function () { return refreshIndex(); })
-        .then(function () { return missingRemoteTexts(); })
-        .then(function (pending) {
-          if (job !== remoteIndexJob) return;
+        .then(function () {
           progress('');
-          if (!silent) {
-            toast(files.length + ' Dateien verfügbar' +
-              (pending.items.length ? ' · Suchindex läuft im Hintergrund' : ' · Index aktuell'));
-          }
-          if (pending.items.length) startRemoteTextIndex(pending, job, silent);
+          if (!silent) toast(files.length + ' Dateien direkt aus der Cloud verfügbar');
+          buildCloudIndex(files.length, silent);
         });
     }).catch(function (e) {
-      if (job !== remoteIndexJob) return;
       progress('');
       toast('Cloud-Fehler: ' + e.message, 5000);
-    });
-  }
-
-  /** Fehlende Textinhalte bestimmen — die Dateiliste ist davon unabhängig. */
-  function missingRemoteTexts() {
-    return DB.index().then(function (list) {
-      var eligible = list.filter(function (r) {
-        return r.remote && !r.binary && r.size <= 5 * 1024 * 1024;
-      });
-      var items = eligible.filter(function (r) { return !r.cached; });
-      return { items: items, total: eligible.length, cached: eligible.length - items.length };
-    });
-  }
-
-  /** Lädt mehrere Textdateien parallel und hält die Oberfläche dabei benutzbar. */
-  function cacheRemoteTexts(pending, job) {
-    var need = pending.items;
-    var next = 0, done = 0, indexed = 0, failed = 0, lastPaint = 0;
-
-    function paint(force) {
-      var now = Date.now();
-      if (force || done === need.length || now - lastPaint >= 200) {
-        lastPaint = now;
-        showIndexProgress(pending.cached + done, pending.total);
-      }
-    }
-
-    function worker() {
-      if (job !== remoteIndexJob || next >= need.length) return Promise.resolve();
-      var rec = need[next++];
-      return Remote.getText(rec.path).then(function (text) {
-        if (job !== remoteIndexJob) return;
-        return DB.get(rec.path).then(function (full) {
-          if (job !== remoteIndexJob || !full || !full.remote || full.etag !== rec.etag) return;
-          full.text = text.replace(/\r\n?/g, '\n');
-          full.lines = full.text.split('\n').length;
-          return DB.put(full).then(function () { indexed++; });
-        });
-      }).catch(function () {
-        if (job === remoteIndexJob) failed++;
-      }).then(function () {
-        if (job !== remoteIndexJob) return;
-        done++;
-        paint(false);
-        return worker();
-      });
-    }
-
-    paint(true);
-    var workers = [];
-    for (var i = 0; i < Math.min(INDEX_CONCURRENCY, need.length); i++) workers.push(worker());
-    return Promise.all(workers).then(function () {
-      if (job !== remoteIndexJob) return null;
-      paint(true);
-      return { total: pending.total, indexed: indexed, failed: failed };
-    });
-  }
-
-  function startRemoteTextIndex(pending, job, silent) {
-    cacheRemoteTexts(pending, job).then(function (result) {
-      if (!result || job !== remoteIndexJob) return;
-      clearIndexProgress();
-      return refreshIndex().then(function () {
-        if (!silent) {
-          toast('Suchindex fertig · ' + result.indexed + ' Dateien gespeichert' +
-            (result.failed ? ' · ' + result.failed + ' übersprungen' : ''), result.failed ? 5000 : 2600);
-        }
-      });
-    }).catch(function (e) {
-      if (job !== remoteIndexJob) return;
-      clearIndexProgress();
-      if (!silent) toast('Suchindex fehlgeschlagen: ' + e.message, 5000);
     });
   }
 
@@ -1439,7 +1455,6 @@
     { name: 'Cloud: Synchronisieren', hint: 'Dateiliste + Suchindex aktualisieren', run: function () { syncRemote(); } },
     { name: 'Cloud: Lokale Dateien hochladen', hint: 'Alles Lokale in die Cloud schieben', run: pushAllToRemote },
     { name: 'Cloud: Trennen', hint: 'Zugangsdaten aus dem Browser löschen', run: function () {
-        stopRemoteIndex();
         Remote.configure({ token: '' }); updateStatusCount(); toast('Cloud getrennt');
       } },
     { name: 'Datei herunterladen', hint: 'Aktuelle Datei speichern', run: function () {
@@ -1453,7 +1468,6 @@
       } },
     { name: 'Lokalen Cache leeren', hint: 'Cloud-Dateien bleiben erhalten', run: function () {
         if (!confirm('Lokalen Index wirklich leeren?')) return;
-        stopRemoteIndex();
         DB.clear().then(function () {
           state.tabs = []; state.active = -1; state.doc = null;
           renderTabs(); el.editorContent.innerHTML = ''; showWelcome(true);

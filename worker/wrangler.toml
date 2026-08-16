@@ -1,11 +1,17 @@
 name = "weblime-api"
 main = "src/worker.js"
-compatibility_date = "2025-01-01"
+compatibility_date = "2026-08-16"
 
 # R2-Bucket (vorher anlegen:  wrangler r2 bucket create weblime)
 [[r2_buckets]]
 binding = "BUCKET"
 bucket_name = "weblime"
+
+[[d1_databases]]
+binding = "SEARCH_DB"
+database_name = "weblime-search"
+database_id = "5998cae9-7803-401f-a889-218b3c40a69f"
+migrations_dir = "migrations"
 
 [vars]
 # Vor dem Deployment auf die exakte GitHub-Pages-Origin setzen.

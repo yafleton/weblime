@@ -201,6 +201,19 @@
       return json('GET', '/api/list').then(function (d) { return d.files || []; });
     },
 
+    /** Dauerhafter Suchindex im Worker/D1. */
+    indexStatus: function () {
+      return json('GET', '/api/index/status');
+    },
+
+    rebuildIndex: function () {
+      return json('POST', '/api/index/rebuild');
+    },
+
+    search: function (options) {
+      return json('POST', '/api/search', null, options);
+    },
+
     getBlob: function (path) {
       return req('GET', '/api/file', { path: path }).then(function (r) { return r.blob(); });
     },

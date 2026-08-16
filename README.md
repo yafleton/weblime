@@ -48,14 +48,15 @@ Das Repository enthält bereits `.github/workflows/pages.yml`. Bei jedem Push au
 
 Die Website ist unter `https://yafleton.github.io/weblime/` erreichbar.
 
-## Optional: Cloud-Speicher mit Cloudflare R2
+## Optional: Cloud-Speicher mit Cloudflare R2 und D1
 
-Ohne Cloud-Backend funktioniert WebLime vollständig lokal. Für geräteübergreifenden Sync werden ein R2-Bucket und der Worker aus `worker/` benötigt.
+Ohne Cloud-Backend funktioniert WebLime vollständig lokal. Für geräteübergreifenden Sync werden ein R2-Bucket, eine D1-Datenbank für den dauerhaften Suchindex und der Worker aus `worker/` benötigt.
 
 Aktuelle Free-Tier-Größenordnungen:
 
 - R2 Standard: 10 GB-Monate Speicher, 1 Million Class-A- und 10 Millionen Class-B-Operationen pro Monat
 - Workers Free: 100.000 Anfragen pro Tag
+- D1 Free: 5 Millionen gelesene und 100.000 geschriebene Zeilen pro Tag, insgesamt 5 GB Speicher (maximal 500 MB pro Datenbank)
 - ausgehender R2-Datenverkehr ist kostenlos
 
 R2 wird über einen Checkout aktiviert. Nutzung oberhalb der Freigrenzen kann berechnet werden.
@@ -65,10 +66,14 @@ R2 wird über einen Checkout aktiviert. Nutzung oberhalb der Freigrenzen kann be
 ```powershell
 npx wrangler@latest login
 npx wrangler@latest r2 bucket create weblime
+npx wrangler@latest d1 create weblime-search
 cd worker
+npx wrangler@latest d1 migrations apply weblime-search --remote
 npx wrangler@latest secret put AUTH_TOKEN
 npx wrangler@latest deploy
 ```
+
+Die von `d1 create` ausgegebene `database_id` gehört in `worker/wrangler.toml` zum Binding `SEARCH_DB`. Im bereits eingerichteten WebLime-Projekt ist das erledigt.
 
 Für `AUTH_TOKEN` ein langes zufälliges Token verwenden, zum Beispiel:
 
@@ -115,6 +120,6 @@ worker/                       Cloudflare Worker vor dem privaten R2-Bucket
 ## Betriebsgrenzen
 
 - Textdateien bis 20 MB werden lokal indexiert.
-- Beim Cloud-Sync erscheint die Dateiliste sofort. Fehlende Textinhalte bis 5 MB werden danach mit bis zu zwölf parallelen Downloads im Hintergrund in den lokalen Suchindex geladen.
+- Beim Cloud-Sync erscheint die Dateiliste sofort. Der Worker baut einmalig einen dauerhaften Volltextindex in Cloudflare D1 auf und setzt einen unterbrochenen Aufbau automatisch fort. Danach funktioniert die projektweite Suche auch im Inkognito-Modus ohne erneuten Download aller Dateien. Neue Uploads und Löschungen aktualisieren den Index serverseitig.
 - Der Browser-ZIP-Export ist zum Schutz vor Speicherabstürzen auf 400 MB und 65.535 Dateien begrenzt.
 - Dateien über 64 MiB werden in 64-MiB-Teilen mit bis zu drei parallelen Datenanfragen hochgeladen. Bei Dateien bis 8 MiB laufen bis zu zwölf Uploads gleichzeitig, damit Ordner mit vielen kleinen Dateien nicht durch die Wartezeit jeder Einzelanfrage ausgebremst werden. Währenddessen zeigt die Statusleiste Durchsatz und geschätzte Restzeit an.

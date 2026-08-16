@@ -1,4 +1,4 @@
-const CACHE = 'weblime-shell-v7';
+const CACHE = 'weblime-shell-v9';
 const SHELL = [
   './', './index.html', './css/style.css', './manifest.webmanifest',
   './js/db.js', './js/lang.js', './js/zip.js', './js/backend.js',
